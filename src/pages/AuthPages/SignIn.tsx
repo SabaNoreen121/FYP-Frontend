@@ -30,7 +30,7 @@ export default function SignIn() {
         title="Sign In | UniSell"
         description="Sign in to UniSell"
       />
-      <AuthLayout>
+      <AuthLayout brand="admin">
         <SignInForm />
       </AuthLayout>
     </>

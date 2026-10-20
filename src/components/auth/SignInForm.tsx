@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link } from "react-router";
 import { ChevronLeftIcon, EyeCloseIcon, EyeIcon } from "../../icons";
 import Label from "../form/Label";
 import Input from "../form/input/InputField";
@@ -8,6 +8,8 @@ import Button from "../ui/button/Button";
 import { authApi } from "../../api/client";
 import { setToken } from "../../api/client";
 import { useAuth } from "../../context/AuthContext";
+import { offerToSaveCredentials, redirectAfterAuth } from "../../utils/passwordManager";
+import { setLoginStockAlerts } from "../common/StockAlertsBanner";
 
 const LAST_LOGIN_EMAIL_KEY = "lastLoginEmail";
 
@@ -19,7 +21,6 @@ export default function SignInForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const { setUser } = useAuth();
-  const navigate = useNavigate();
 
   useEffect(() => {
     try {
@@ -38,24 +39,27 @@ export default function SignInForm() {
       return;
     }
     setLoading(true);
+    const emailNorm = email.trim().toLowerCase();
     try {
-      const res = await authApi.login({ email: email.trim().toLowerCase(), password });
+      const res = await authApi.login({ email: emailNorm, password });
       setToken(res.token);
       setUser(res.user as Parameters<typeof setUser>[0]);
+      if (!res.user.isSuperadmin && res.stock_alerts) {
+        setLoginStockAlerts(res.stock_alerts);
+      }
       try {
         if (rememberEmail) {
-          localStorage.setItem(LAST_LOGIN_EMAIL_KEY, email.trim().toLowerCase());
+          localStorage.setItem(LAST_LOGIN_EMAIL_KEY, emailNorm);
         } else {
           localStorage.removeItem(LAST_LOGIN_EMAIL_KEY);
         }
       } catch {
         /* ignore */
       }
-      if (res.user.isSuperadmin) {
-        navigate("/superadmin/tenants", { replace: true });
-      } else {
-        navigate("/", { replace: true });
-      }
+      await offerToSaveCredentials(emailNorm, password);
+      const nextPath = res.user.isSuperadmin ? "/superadmin/tenants" : "/";
+      redirectAfterAuth(nextPath);
+      return;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -95,28 +99,40 @@ export default function SignInForm() {
                 <div className="w-full border-t border-gray-200 dark:border-gray-800"></div>
               </div>
             </div>
-            <form onSubmit={handleSubmit}>
+            <form
+              name="signin"
+              action="/signin"
+              method="post"
+              autoComplete="on"
+              onSubmit={handleSubmit}
+            >
               <div className="space-y-6">
                 <div>
-                  <Label>
+                  <Label htmlFor="signin-email">
                     Email <span className="text-error-500">*</span>{" "}
                   </Label>
                   <Input
+                    id="signin-email"
+                    name="email"
                     placeholder="info@gmail.com"
                     type="email"
+                    autoComplete="username"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     disabled={loading}
                   />
                 </div>
                 <div>
-                  <Label>
+                  <Label htmlFor="signin-password">
                     Password <span className="text-error-500">*</span>{" "}
                   </Label>
                   <div className="relative">
                     <Input
+                      id="signin-password"
+                      name="password"
                       type={showPassword ? "text" : "password"}
                       placeholder="Enter your password"
+                      autoComplete="current-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       disabled={loading}

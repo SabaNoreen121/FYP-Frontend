@@ -6,6 +6,7 @@ import { tenantApi, type CarrierIntegration, type IntegrationCredentialSchema } 
 import Label from "../components/form/Label";
 import Input from "../components/form/input/InputField";
 import Checkbox from "../components/form/input/Checkbox";
+import SetupFormShell, { SetupFormAside, SetupFormSection } from "../components/setup/SetupFormShell";
 
 export default function CarrierIntegrations() {
   const [carriers, setCarriers] = useState<Array<{ id: string; name: string; slug: string; credentials_schema: IntegrationCredentialSchema[] }>>([]);
@@ -162,16 +163,42 @@ export default function CarrierIntegrations() {
         )}
 
         {formVisible ? (
-          <div
-            ref={formContainerRef}
-            className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900/50"
-          >
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{editing ? "Edit carrier integration" : "Add carrier integration"}</h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6">
-              <div className="space-y-5 max-w-2xl">
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+          <div ref={formContainerRef}>
+            <SetupFormShell
+              title={editing ? "Edit carrier integration" : "Add carrier integration"}
+              subtitle="Connect a courier or logistics provider to book shipments and print labels."
+              badge="Courier"
+              onCancel={closeForm}
+              onSubmit={handleSave}
+              aside={
+                <SetupFormAside
+                  title="Shipping setup"
+                  accent="emerald"
+                  steps={[
+                    { label: "Select carrier", detail: "Choose your courier partner from the list." },
+                    { label: "Add credentials", detail: "Account ID and API keys from the carrier portal." },
+                    { label: "Activate", detail: "Enable the integration when credentials are verified." },
+                  ]}
+                  tips={[
+                    "Credentials are stored securely per tenant.",
+                    "Inactive carriers are hidden from consignment booking.",
+                    "Configure carrier services after saving the integration.",
+                  ]}
+                />
+              }
+              footer={
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-gray-200 pt-6 dark:border-gray-700">
+                  <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={saving} className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/25 hover:bg-emerald-700 disabled:opacity-60 dark:bg-emerald-500 dark:hover:bg-emerald-600">
+                    {saving ? "Saving…" : editing ? "Update carrier" : "Connect carrier"}
+                  </button>
+                </div>
+              }
+            >
+              <SetupFormSection title="Carrier" description="Which logistics partner to connect.">
+                <div>
                   <Label>Carrier</Label>
                   <select
                     value={formCarrierId}
@@ -188,39 +215,32 @@ export default function CarrierIntegrations() {
                     <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">No carriers available. Run backend migrations, then refresh.</p>
                   )}
                 </div>
-                {selectedSchema.length > 0 && (
-                  <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
-                    <Label>Credentials</Label>
-                    <div className="mt-3 space-y-3">
-                      {selectedSchema.map((field) => (
-                        <div key={field.key}>
-                          <Label className="text-sm">{field.label}</Label>
-                          <Input
-                            type={field.type === "password" ? "password" : "text"}
-                            placeholder={field.placeholder}
-                            value={formCredentials[field.key] ?? ""}
-                            onChange={(e) => setFormCredentials((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                            className="mt-1.5"
-                          />
-                        </div>
-                      ))}
+              </SetupFormSection>
+
+              {selectedSchema.length > 0 && (
+                <SetupFormSection title="Credentials" description="API access from your carrier account.">
+                  {selectedSchema.map((field) => (
+                    <div key={field.key}>
+                      <Label className="text-sm">{field.label}</Label>
+                      <Input
+                        type={field.type === "password" ? "password" : "text"}
+                        placeholder={field.placeholder}
+                        value={formCredentials[field.key] ?? ""}
+                        onChange={(e) => setFormCredentials((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                        className="mt-1.5"
+                      />
                     </div>
-                  </div>
-                )}
-                <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+                  ))}
+                </SetupFormSection>
+              )}
+
+              <SetupFormSection title="Status">
+                <div className="flex items-center gap-2">
                   <Checkbox checked={formActive} onChange={setFormActive} />
-                  <span className="text-sm text-gray-700 dark:text-gray-300">Active</span>
+                  <span className="text-sm text-gray-700 dark:text-gray-300">Active — available for consignments and label printing</span>
                 </div>
-              </div>
-              <div className="mt-8 flex justify-end gap-2 border-t border-gray-200 pt-6 dark:border-gray-700">
-                <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
-                  Cancel
-                </button>
-                <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 dark:bg-indigo-500 dark:hover:bg-indigo-600">
-                  {saving ? "Saving…" : editing ? "Update" : "Create"}
-                </button>
-              </div>
-            </form>
+              </SetupFormSection>
+            </SetupFormShell>
           </div>
         ) : (
           <>

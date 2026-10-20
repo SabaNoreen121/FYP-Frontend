@@ -1,8 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useSearchParams } from "react-router";
 import PageBreadcrumb from "../components/common/PageBreadCrumb";
 import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
 import { tenantApi, type Order, type Company, type Consignment, type CarrierIntegration, type CarrierIntegrationService } from "../api/client";
+import { OrderChannelCell, OrderSyncStatus } from "../components/common/ChannelSyncStatus";
 import Label from "../components/form/Label";
 
 function formatDate(d: string) {
@@ -28,8 +30,9 @@ type OrderWithConsignment = Order & { _consignment?: Consignment | null };
 
 function buildColumns(): DataGridColumn<OrderWithConsignment>[] {
   return [
-    { key: "company_name", label: "Company", render: (v) => (v ? String(v) : "—") },
-    { key: "status", label: "Status", render: (_, row) => statusBadge(row.status) },
+    { key: "channel", label: "Company", render: (_, row) => <OrderChannelCell order={row} /> },
+    { key: "order_status", label: "Order status", render: (_, row) => statusBadge(row.status) },
+    { key: "sync_status", label: "Status", render: (_, row) => <OrderSyncStatus order={row} /> },
     { key: "order_number", label: "Order #", render: (v) => <span className="font-medium text-gray-900 dark:text-white">{String(v ?? "—")}</span> },
     { key: "email", label: "Email" },
     {
@@ -45,7 +48,6 @@ function buildColumns(): DataGridColumn<OrderWithConsignment>[] {
     { key: "total", label: "Total", render: (v) => (typeof v === "number" ? v.toFixed(2) : v ?? "—") },
     { key: "financial_status", label: "Financial", render: (v) => v || "—" },
     { key: "fulfillment_status", label: "Fulfillment", render: (v) => (v ? <span className={v === "fulfilled" ? "text-green-600 dark:text-green-400 font-medium" : ""}>{v}</span> : "—") },
-    { key: "source", label: "Source", render: (v) => (v ? String(v).charAt(0).toUpperCase() + String(v).slice(1).toLowerCase() : "—") },
     { key: "created_at", label: "Date", render: (v) => formatDate(String(v ?? "")) },
   ];
 }
@@ -81,6 +83,8 @@ function getSuggestedCarrierSlug(
 }
 
 export default function Orders() {
+  const [searchParams] = useSearchParams();
+  const headerSearch = searchParams.get("search")?.trim() ?? "";
   const [companies, setCompanies] = useState<Company[]>([]);
   const [allOrders, setAllOrders] = useState<Order[]>([]);
   const [consignments, setConsignments] = useState<Consignment[]>([]);
@@ -154,7 +158,18 @@ export default function Orders() {
     ? allOrders.filter((o) => o.company_id === companyFilter)
     : allOrders;
   const ordersFilteredByStatus = ordersFilteredByCompany.filter((o) => statusFilter.includes(o.status));
-  const ordersToShow = [...ordersFilteredByStatus].sort((a, b) => {
+  const ordersFilteredBySearch = useMemo(() => {
+    if (!headerSearch) return ordersFilteredByStatus;
+    const q = headerSearch.toLowerCase();
+    return ordersFilteredByStatus.filter((o) => {
+      const num = String(o.order_number ?? "");
+      const email = (o.email ?? "").toLowerCase();
+      const ext = (o.external_id ?? "").toLowerCase();
+      const company = (o.company_name ?? "").toLowerCase();
+      return num.includes(q) || email.includes(q) || ext.includes(q) || company.includes(q);
+    });
+  }, [ordersFilteredByStatus, headerSearch]);
+  const ordersToShow = [...ordersFilteredBySearch].sort((a, b) => {
     const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
     const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
     return orderSort === "newest" ? tb - ta : ta - tb;
@@ -207,7 +222,25 @@ export default function Orders() {
         carrier_service_id: consignmentServiceId,
       });
       if (res.errors?.length) {
-        setError(res.errors.map((x) => `${x.order_id}: ${x.error}`).join("; "));
+        setError(
+          res.errors
+            .map((x) => {
+              const msg = String(x.error || "").replace(/<\s*\/?\s*html[\s\S]*/i, "").trim();
+              const short = /Huawei WAF|Leopard’s side|use Leopard|not DHL|domestic Pakistan/i.test(
+                msg
+              )
+                ? msg.slice(0, 280)
+                : /No product available for this route/i.test(msg)
+                  ? "DHL has no service for this route. For Pakistan → Pakistan use Leopard Courier."
+                : /502|404|Bad Gateway|HTML error page|temporarily unavailable|down or unreachable|Cannot reach Leopard|fetch failed|timed out|ETIMEDOUT/i.test(
+                      msg
+                    )
+                  ? "Cannot reach Leopard courier right now. Retry in a minute — their API may be briefly unreachable."
+                  : msg.slice(0, 200) || "Consignment failed";
+              return `${String(x.order_id).slice(-6)}: ${short}`;
+            })
+            .join("; ")
+        );
       }
       if (res.created > 0) {
         setConsignmentSuccessCount(res.created);
@@ -229,11 +262,15 @@ export default function Orders() {
     }
   };
 
-  const openConsignmentModal = () => {
-    setConsignmentCarrierId("");
-    setConsignmentServiceId("");
+  const openConsignmentModal = async () => {
     setConsignmentSuccessCount(null);
     setConsignmentModalOpen(true);
+    if (suggestedIntegration) {
+      await applySuggestion();
+    } else {
+      setConsignmentCarrierId("");
+      setConsignmentServiceId("");
+    }
   };
 
   const handleBackfill = async (e: React.FormEvent) => {
@@ -418,9 +455,16 @@ export default function Orders() {
                   className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                 >
                   <option value="">Select carrier</option>
-                  {carrierIntegrations.map((ci) => (
+                  {[...carrierIntegrations]
+                    .sort((a, b) => {
+                      if (suggestedIntegration?.id === a.id) return -1;
+                      if (suggestedIntegration?.id === b.id) return 1;
+                      return 0;
+                    })
+                    .map((ci) => (
                     <option key={ci.id} value={ci.id}>
                       {ci.carrier_name}
+                      {suggestedIntegration?.id === ci.id ? " (suggested)" : ""}
                     </option>
                   ))}
                 </select>

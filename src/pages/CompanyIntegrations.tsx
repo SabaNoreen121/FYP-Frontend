@@ -1,11 +1,13 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import axios from "axios";
 import PageBreadcrumb from "../components/common/PageBreadCrumb";
 import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
-import { tenantApi, type CompanyIntegration, type Company, type IntegrationCredentialSchema } from "../api/client";
+import { tenantApi, API_BASE, type CompanyIntegration, type Company, type IntegrationCredentialSchema } from "../api/client";
 import Label from "../components/form/Label";
 import Input from "../components/form/input/InputField";
 import Checkbox from "../components/form/input/Checkbox";
+import SetupFormShell, { SetupFormAside, SetupFormSection } from "../components/setup/SetupFormShell";
 
 export default function CompanyIntegrations() {
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -25,7 +27,13 @@ export default function CompanyIntegrations() {
     inventory: true,
   });
   const [saving, setSaving] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
+  const [darazConnecting, setDarazConnecting] = useState(false);
+  const [darazOAuthConnected, setDarazOAuthConnected] = useState(false);
   const formContainerRef = useRef<HTMLDivElement>(null);
+
+  const selectedIntegration = integrations.find((i) => i.id === formIntegrationId);
+  const isDarazSelected = selectedIntegration?.slug === "daraz";
 
   const load = async () => {
     setError("");
@@ -49,13 +57,17 @@ export default function CompanyIntegrations() {
     load();
   }, []);
 
-  const selectedSchema = integrations.find((i) => i.id === formIntegrationId)?.credentials_schema || [];
+  const selectedSchema =
+    isDarazSelected ? [] : selectedIntegration?.credentials_schema || [];
 
   const openCreate = () => {
+    setSuccessMessage("");
     setEditing(null);
     setFormCompanyId("");
     setFormIntegrationId("");
     setFormCredentials({});
+    setDarazOAuthConnected(false);
+    setDarazConnecting(false);
     setFormActive(true);
     setFormFeatures({ orders: true, products: true, inventory: true });
     setFormVisible(true);
@@ -66,6 +78,11 @@ export default function CompanyIntegrations() {
     setFormCompanyId(ci.company_id || "");
     setFormIntegrationId(ci.integration_id);
     setFormCredentials(ci.credentials || {});
+    const isDaraz = ci.integration_slug === "daraz";
+    setDarazOAuthConnected(
+      isDaraz && !!(ci.credentials?.oauth_connected || ci.credentials?.authorization_code)
+    );
+    setDarazConnecting(false);
     setFormActive(ci.status === 1);
     const features = Array.isArray(ci.features) ? ci.features : ["orders", "products", "inventory"];
     setFormFeatures({
@@ -86,6 +103,45 @@ export default function CompanyIntegrations() {
       formContainerRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [formVisible]);
+
+  useEffect(() => {
+    if (!formVisible) return;
+    const listener = (event: MessageEvent) => {
+      const data = event.data;
+      if (data && typeof data === "object" && data.type === "DARAZ_CONNECTED") {
+        setDarazOAuthConnected(true);
+        setDarazConnecting(false);
+        setFormCredentials((prev) => ({
+          ...prev,
+          oauth_connected: "true",
+          ...(data.code ? { authorization_code: String(data.code) } : {}),
+        }));
+      }
+    };
+    window.addEventListener("message", listener);
+    return () => window.removeEventListener("message", listener);
+  }, [formVisible]);
+
+  const connectDaraz = useCallback(async () => {
+    if (!formCompanyId) {
+      setError("Select a company before connecting Daraz.");
+      return;
+    }
+    setError("");
+    setDarazConnecting(true);
+    try {
+      const res = await axios.get<{ url: string }>(`${API_BASE}/api/daraz/connect`);
+      const url = res.data?.url;
+      if (!url) throw new Error("No authorization URL returned from server");
+      const popup = window.open(url, "Daraz Login", "width=600,height=700");
+      if (!popup) {
+        throw new Error("Popup blocked. Allow popups for this site and try again.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to connect Daraz");
+      setDarazConnecting(false);
+    }
+  }, [formCompanyId]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +175,11 @@ export default function CompanyIntegrations() {
           setSaving(false);
           return;
         }
+        if (isDarazSelected && !darazOAuthConnected) {
+          setError("Connect your Daraz account using the button below before saving.");
+          setSaving(false);
+          return;
+        }
         await tenantApi.createCompanyIntegration({
           company_id: formCompanyId,
           integration_id: formIntegrationId,
@@ -129,6 +190,11 @@ export default function CompanyIntegrations() {
       }
       closeForm();
       await load();
+      if (isDarazSelected) {
+        setSuccessMessage(
+          "Daraz connected. Products are importing now (or use Sync on the Inventory page). This can take a minute."
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -209,18 +275,60 @@ export default function CompanyIntegrations() {
             {error}
           </div>
         )}
+        {successMessage && (
+          <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400">
+            {successMessage}
+          </div>
+        )}
 
         {formVisible ? (
-          <div
-            ref={formContainerRef}
-            className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900/50"
-          >
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{editing ? "Edit integration" : "Add integration"}</h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6">
-              <div className="space-y-5 max-w-2xl">
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+          <div ref={formContainerRef}>
+            <SetupFormShell
+              title={editing ? "Edit integration" : "Add integration"}
+              subtitle="Connect a marketplace or sales channel to sync orders, products, and inventory."
+              badge="Integration"
+              onCancel={closeForm}
+              onSubmit={handleSave}
+              aside={
+                <SetupFormAside
+                  title={isDarazSelected ? "Connect Daraz" : "Link your store"}
+                  accent="sky"
+                  steps={[
+                    { label: "Pick company", detail: "Choose which legal entity owns this store connection." },
+                    { label: "Choose channel", detail: "Select the marketplace or platform to integrate." },
+                    ...(isDarazSelected
+                      ? [{ label: "OAuth sign-in", detail: "Authorize UniSell in the Daraz popup before saving." }]
+                      : [{ label: "Enter credentials", detail: "API keys from your platform developer console." }]),
+                    { label: "Enable features", detail: "Turn on orders, products, and/or inventory sync." },
+                  ]}
+                  tips={
+                    isDarazSelected
+                      ? [
+                          "Allow popups for this site when connecting Daraz.",
+                          "Callback URL must be /api/daraz/callback in Daraz Open Platform.",
+                          "Product import may take a minute after first connect.",
+                        ]
+                      : [
+                          "Create a company first if the dropdown is empty.",
+                          "Inactive integrations skip scheduled sync jobs.",
+                          "You can edit credentials without changing company or channel.",
+                        ]
+                  }
+                />
+              }
+              footer={
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-gray-200 pt-6 dark:border-gray-700">
+                  <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={saving} className="rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-sky-500/25 hover:bg-sky-700 disabled:opacity-60 dark:bg-sky-500 dark:hover:bg-sky-600">
+                    {saving ? "Saving…" : editing ? "Update integration" : "Create integration"}
+                  </button>
+                </div>
+              }
+            >
+              <SetupFormSection title="Connection" description="Which company and sales channel to link.">
+                <div>
                   <Label>Company</Label>
                   <select
                     value={formCompanyId}
@@ -237,11 +345,16 @@ export default function CompanyIntegrations() {
                     <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">Create a company first from the Companies page.</p>
                   )}
                 </div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+                <div>
                   <Label>Integration</Label>
                   <select
                     value={formIntegrationId}
-                    onChange={(e) => { setFormIntegrationId(e.target.value); setFormCredentials({}); }}
+                    onChange={(e) => {
+                      setFormIntegrationId(e.target.value);
+                      setFormCredentials({});
+                      setDarazOAuthConnected(false);
+                      setDarazConnecting(false);
+                    }}
                     disabled={!!editing}
                     className="mt-1.5 h-11 w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-800 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
                   >
@@ -254,72 +367,93 @@ export default function CompanyIntegrations() {
                     <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">No integrations available. Run backend migration then refresh.</p>
                   )}
                 </div>
-                {selectedSchema.length > 0 && (
-                  <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
-                    <Label>Credentials</Label>
-                    <div className="mt-3 space-y-3">
-                      {selectedSchema.map((field) => (
-                        <div key={field.key}>
-                          <Label className="text-sm">{field.label}</Label>
-                          <Input
-                            type={field.type === "password" ? "password" : "text"}
-                            placeholder={field.placeholder}
-                            value={formCredentials[field.key] ?? ""}
-                            onChange={(e) => setFormCredentials((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                            className="mt-1.5"
-                          />
-                        </div>
-                      ))}
-                    </div>
+              </SetupFormSection>
+
+              {isDarazSelected && (
+                <SetupFormSection title="Daraz account" description="Sign in with Daraz OAuth before saving a new connection.">
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Callback URL in Daraz Open Platform must match <code className="text-xs">/api/daraz/callback</code>.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {darazOAuthConnected ? (
+                      <span className="inline-flex rounded-lg border border-green-300 bg-green-50 px-4 py-2.5 text-sm font-medium text-green-800 dark:border-green-700 dark:bg-green-900/20 dark:text-green-300">
+                        Daraz connected ✓
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={connectDaraz}
+                        disabled={darazConnecting || !formCompanyId}
+                        className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm hover:bg-sky-700 disabled:opacity-60 dark:bg-sky-500 dark:hover:bg-sky-600"
+                      >
+                        {darazConnecting ? "Opening Daraz…" : "Connect Daraz account"}
+                      </button>
+                    )}
+                    {darazOAuthConnected && !editing && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDarazOAuthConnected(false);
+                          setFormCredentials({});
+                        }}
+                        className="text-sm text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                      >
+                        Connect again
+                      </button>
+                    )}
                   </div>
-                )}
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 space-y-3 dark:border-gray-800 dark:bg-gray-800/30">
-                  <div className="flex items-center gap-2">
-                    <Checkbox checked={formActive} onChange={setFormActive} />
-                    <span className="text-sm text-gray-700 dark:text-gray-300">
-                      Active (sync jobs will run for this integration)
-                    </span>
-                  </div>
-                  <div>
-                    <Label className="text-sm">Features</Label>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Choose what this integration should handle for the company.
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-4">
-                      <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                        <Checkbox
-                          checked={formFeatures.orders}
-                          onChange={(v) => setFormFeatures((prev) => ({ ...prev, orders: v }))}
-                        />
-                        <span>Orders</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                        <Checkbox
-                          checked={formFeatures.products}
-                          onChange={(v) => setFormFeatures((prev) => ({ ...prev, products: v }))}
-                        />
-                        <span>Products</span>
-                      </label>
-                      <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                        <Checkbox
-                          checked={formFeatures.inventory}
-                          onChange={(v) => setFormFeatures((prev) => ({ ...prev, inventory: v }))}
-                        />
-                        <span>Inventory</span>
-                      </label>
+                  {!formCompanyId && (
+                    <p className="text-sm text-amber-600 dark:text-amber-400">Select a company first, then connect Daraz.</p>
+                  )}
+                </SetupFormSection>
+              )}
+
+              {selectedSchema.length > 0 && (
+                <SetupFormSection title="Credentials" description="API keys from your platform developer console.">
+                  {selectedSchema.map((field) => (
+                    <div key={field.key}>
+                      <Label className="text-sm">{field.label}</Label>
+                      <Input
+                        type={field.type === "password" ? "password" : "text"}
+                        placeholder={field.placeholder}
+                        value={formCredentials[field.key] ?? ""}
+                        onChange={(e) => setFormCredentials((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                        className="mt-1.5"
+                      />
                     </div>
+                  ))}
+                </SetupFormSection>
+              )}
+
+              <SetupFormSection title="Sync options" description="Control what UniSell syncs for this connection.">
+                <div className="flex items-center gap-2">
+                  <Checkbox checked={formActive} onChange={setFormActive} />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    Active (sync jobs will run for this integration)
+                  </span>
+                </div>
+                <div>
+                  <Label className="text-sm">Features</Label>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Choose what this integration should handle for the company.
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-4">
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <Checkbox checked={formFeatures.orders} onChange={(v) => setFormFeatures((prev) => ({ ...prev, orders: v }))} />
+                      <span>Orders</span>
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <Checkbox checked={formFeatures.products} onChange={(v) => setFormFeatures((prev) => ({ ...prev, products: v }))} />
+                      <span>Products</span>
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <Checkbox checked={formFeatures.inventory} onChange={(v) => setFormFeatures((prev) => ({ ...prev, inventory: v }))} />
+                      <span>Inventory</span>
+                    </label>
                   </div>
                 </div>
-              </div>
-              <div className="mt-8 flex justify-end gap-2 border-t border-gray-200 pt-6 dark:border-gray-700">
-                <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
-                  Cancel
-                </button>
-                <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 dark:bg-indigo-500 dark:hover:bg-indigo-600">
-                  {saving ? "Saving…" : editing ? "Update" : "Create"}
-                </button>
-              </div>
-            </form>
+              </SetupFormSection>
+            </SetupFormShell>
           </div>
         ) : (
           <>

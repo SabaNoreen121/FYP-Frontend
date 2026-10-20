@@ -3,6 +3,7 @@ import { Outlet } from "react-router";
 import AppHeader from "./AppHeader";
 import Backdrop from "./Backdrop";
 import AppSidebar from "./AppSidebar";
+import StockAlertsBanner from "../components/common/StockAlertsBanner";
 
 const LayoutContent: React.FC = () => {
   const { isExpanded, isHovered, isMobileOpen } = useSidebar();
@@ -20,6 +21,7 @@ const LayoutContent: React.FC = () => {
       >
         <AppHeader />
         <div className="w-full p-4 md:p-6">
+          <StockAlertsBanner />
           <Outlet />
         </div>
       </div>

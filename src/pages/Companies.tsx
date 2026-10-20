@@ -5,6 +5,7 @@ import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
 import { tenantApi, type Company } from "../api/client";
 import Label from "../components/form/Label";
 import Input from "../components/form/input/InputField";
+import SetupFormShell, { SetupFormAside, SetupFormSection } from "../components/setup/SetupFormShell";
 
 export default function Companies() {
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -163,16 +164,42 @@ export default function Companies() {
         )}
 
         {formVisible ? (
-          <div
-            ref={formContainerRef}
-            className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900/50"
-          >
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">{editing ? "Edit company" : "Add company"}</h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6">
-              <div className="space-y-5 max-w-2xl">
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+          <div ref={formContainerRef}>
+            <SetupFormShell
+              title={editing ? "Edit company" : "Add company"}
+              subtitle="Companies represent your legal entities and ship-from addresses for orders and consignments."
+              badge="Setup"
+              onCancel={closeForm}
+              onSubmit={handleSave}
+              aside={
+                <SetupFormAside
+                  title="Organize your business"
+                  accent="violet"
+                  steps={[
+                    { label: "Name your company", detail: "Use the legal or trading name you use on invoices and labels." },
+                    { label: "Add ship-from address", detail: "Used as the origin on consignments and carrier bookings." },
+                    { label: "Connect integrations", detail: "After saving, link marketplaces from Company Integrations." },
+                  ]}
+                  tips={[
+                    "Country code must be two letters (e.g. PK, GB, US).",
+                    "You can add multiple companies if you operate several brands.",
+                    "Address fields are optional but recommended for shipping.",
+                  ]}
+                />
+              }
+              footer={
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-gray-200 pt-6 dark:border-gray-700">
+                  <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={saving} className="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-violet-500/25 hover:bg-violet-700 disabled:opacity-60 dark:bg-violet-500 dark:hover:bg-violet-600">
+                    {saving ? "Saving…" : editing ? "Update company" : "Create company"}
+                  </button>
+                </div>
+              }
+            >
+              <SetupFormSection title="Company details" description="Primary identity for this business unit.">
+                <div>
                   <Label>Company name</Label>
                   <Input
                     value={formName}
@@ -181,39 +208,29 @@ export default function Companies() {
                     className="mt-1.5"
                   />
                 </div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
-                  <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">Address (shipper/origin for consignments)</p>
-                  <div className="space-y-4">
-                    <div>
-                      <Label>Address (street)</Label>
-                      <Input value={formAddress1} onChange={(e) => setFormAddress1(e.target.value)} placeholder="e.g. 123 High Street" className="mt-1.5" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <Label>City</Label>
-                        <Input value={formCity} onChange={(e) => setFormCity(e.target.value)} placeholder="e.g. London" className="mt-1.5" />
-                      </div>
-                      <div>
-                        <Label>Postal code</Label>
-                        <Input value={formPostalCode} onChange={(e) => setFormPostalCode(e.target.value)} placeholder="e.g. SW1A 1AA" className="mt-1.5" />
-                      </div>
-                    </div>
-                    <div>
-                      <Label>Country code</Label>
-                      <Input value={formCountryCode} onChange={(e) => setFormCountryCode(e.target.value)} placeholder="e.g. GB" className="mt-1.5" maxLength={2} />
-                    </div>
+              </SetupFormSection>
+
+              <SetupFormSection title="Ship-from address" description="Origin address for consignments and carrier labels.">
+                <div>
+                  <Label>Street address</Label>
+                  <Input value={formAddress1} onChange={(e) => setFormAddress1(e.target.value)} placeholder="e.g. 123 High Street" className="mt-1.5" />
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label>City</Label>
+                    <Input value={formCity} onChange={(e) => setFormCity(e.target.value)} placeholder="e.g. Karachi" className="mt-1.5" />
+                  </div>
+                  <div>
+                    <Label>Postal code</Label>
+                    <Input value={formPostalCode} onChange={(e) => setFormPostalCode(e.target.value)} placeholder="e.g. 75500" className="mt-1.5" />
                   </div>
                 </div>
-              </div>
-              <div className="mt-8 flex justify-end gap-2 border-t border-gray-200 pt-6 dark:border-gray-700">
-                <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
-                  Cancel
-                </button>
-                <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 dark:bg-indigo-500 dark:hover:bg-indigo-600">
-                  {saving ? "Saving…" : editing ? "Update" : "Create"}
-                </button>
-              </div>
-            </form>
+                <div>
+                  <Label>Country code</Label>
+                  <Input value={formCountryCode} onChange={(e) => setFormCountryCode(e.target.value)} placeholder="e.g. PK" className="mt-1.5 max-w-[8rem]" maxLength={2} />
+                </div>
+              </SetupFormSection>
+            </SetupFormShell>
           </div>
         ) : (
           <>

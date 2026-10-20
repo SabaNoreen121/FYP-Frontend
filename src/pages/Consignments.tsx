@@ -3,6 +3,7 @@ import PageBreadcrumb from "../components/common/PageBreadCrumb";
 import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
 import { tenantApi, openConsignmentLabel, type Order, type Consignment, type Company } from "../api/client";
+import { OrderChannelCell, OrderSyncStatus } from "../components/common/ChannelSyncStatus";
 
 function formatDate(d: string) {
   try {
@@ -83,9 +84,16 @@ export default function Consignments() {
       ),
     },
     {
-      key: "company",
+      key: "channel",
       label: "Company",
-      render: (_, row) => (row._order?.company_name ? String(row._order.company_name) : "—"),
+      render: (_, row) =>
+        row._order ? <OrderChannelCell order={row._order} /> : <span className="text-gray-400">—</span>,
+    },
+    {
+      key: "sync_status",
+      label: "Status",
+      render: (_, row) =>
+        row._order ? <OrderSyncStatus order={row._order} /> : <span className="text-gray-400">—</span>,
     },
     {
       key: "address",

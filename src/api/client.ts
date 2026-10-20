@@ -109,14 +109,25 @@ export async function api<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers as Record<string, string>),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers as Record<string, string>),
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      throw new Error(
+        `Cannot reach UniSell backend at ${API_BASE}. In VS Code/Cursor open E:\\UniSell\\backend and run npm run dev, then refresh.`
+      );
+    }
+    throw err instanceof Error ? err : new Error(msg);
+  }
   if (res.status === 401 && onUnauthorized) {
     onUnauthorized();
     throw new Error("Unauthorized");
@@ -153,6 +164,40 @@ export type CompanyIntegration = {
   company_name?: string;
   created_at?: string;
   updated_at?: string;
+};
+
+export type DashboardProductStat = {
+  product_id: string;
+  title: string;
+  sku: string;
+  order_count: number;
+  price?: number | null;
+  product_type?: string;
+};
+
+export type DashboardStaleProduct = {
+  product_id: string;
+  title: string;
+  sku: string;
+  last_order_at: string | null;
+  days_without_order: number | null;
+  strategy: { id: string; label: string; detail: string };
+};
+
+export type DashboardAnalytics = {
+  hero_product: DashboardProductStat | null;
+  hero_product_month: DashboardProductStat | null;
+  top_products: DashboardProductStat[];
+  recent_orders: Order[];
+  orders_by_day: Array<{ date: string; count: number }>;
+  revenue_by_month: Array<{ month: string; label: string; revenue: number }>;
+  stale_products: DashboardStaleProduct[];
+  summary: {
+    total_orders: number;
+    total_products: number;
+    orders_last_30_days: number;
+    revenue_this_month: number;
+  };
 };
 
 export type Order = {
@@ -223,8 +268,10 @@ export type Product = {
   quantity?: number;
   allocated?: number;
   shopify_synced?: boolean;
+  daraz_synced?: boolean;
   coupon?: string | null;
   page_title?: string | null;
+  meta_description?: string | null;
   handle?: string | null;
   description?: string | null;
   sizes?: string[];
@@ -246,6 +293,8 @@ export type InventoryRow = {
   quantity: number;
   allocated: number;
   shopify_synced: boolean;
+  daraz_synced?: boolean;
+  source?: string | null;
 };
 
 export type InventoryItem = {
@@ -280,7 +329,27 @@ export type CarrierIntegrationService = {
 };
 
 // Auth API (no Bearer for signup/login)
-export type LoginResponse = { token: string; user: { email: string; role: string; tenant_name?: string; isSuperadmin: boolean } };
+export type StockAlertItem = {
+  id: string | null;
+  product_id: string;
+  title: string;
+  sku: string;
+  quantity: number;
+  created_at?: string;
+  email_sent?: boolean;
+};
+
+export type StockAlertSummary = {
+  count: number;
+  alerts: StockAlertItem[];
+  email_configured: boolean;
+};
+
+export type LoginResponse = {
+  token: string;
+  user: { email: string; role: string; tenant_name?: string; isSuperadmin: boolean };
+  stock_alerts?: StockAlertSummary;
+};
 export type TenantRow = { id: string; tenant_name: string; email: string; status: string; created_at?: string };
 
 export const authApi = {
@@ -314,6 +383,7 @@ export const authApi = {
 
 // Tenant API
 export const tenantApi = {
+  getDashboardAnalytics: () => api<DashboardAnalytics>("/api/tenant/dashboard/analytics"),
   getCompanies: () =>
     api<{ companies: Company[] }>("/api/tenant/companies"),
   createCompany: (body: { name: string; address1?: string; city?: string; postal_code?: string; country_code?: string }) =>
@@ -348,10 +418,11 @@ export const tenantApi = {
     api<CompanyIntegration>(`/api/tenant/company-integrations/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteCompanyIntegration: (id: string) =>
     api<{ message: string }>(`/api/tenant/company-integrations/${id}`, { method: "DELETE" }),
-  getOrders: (params?: { company_id?: string; sort?: string }) => {
+  getOrders: (params?: { company_id?: string; sort?: string; search?: string }) => {
     const searchParams = new URLSearchParams();
     if (params?.company_id) searchParams.set("company_id", params.company_id);
     if (params?.sort?.trim()) searchParams.set("sort", params.sort.trim());
+    if (params?.search?.trim()) searchParams.set("search", params.search.trim());
     const q = searchParams.toString() ? `?${searchParams.toString()}` : "";
     return api<{ orders: Order[] }>(`/api/tenant/orders${q}`);
   },
@@ -428,6 +499,7 @@ export const tenantApi = {
     status?: string;
     source?: string;
     page_title?: string;
+    meta_description?: string;
     handle?: string;
     description?: string;
     sizes?: string[];
@@ -436,6 +508,7 @@ export const tenantApi = {
     tags?: string[];
     vendor?: string;
     integration_slugs?: string[];
+    quantity?: number;
     variants?: ProductVariant[];
   }) =>
     api<Product>("/api/tenant/products", {
@@ -454,6 +527,7 @@ export const tenantApi = {
       coupon?: string;
       status?: string;
       page_title?: string;
+      meta_description?: string;
       handle?: string;
       description?: string;
       sizes?: string[];
@@ -473,6 +547,30 @@ export const tenantApi = {
     api<{ message: string }>(`/api/tenant/products/${id}`, { method: "DELETE" }),
   pushProductToShopify: (id: string) =>
     api<Product>(`/api/tenant/products/${id}/push-to-shopify`, { method: "POST" }),
+  pushProductToDaraz: (id: string) =>
+    api<Product & { message?: string }>(`/api/tenant/products/${id}/push-to-daraz`, { method: "POST" }),
+  getAiConfig: () =>
+    api<{ configured: boolean; model: string; models: string[] }>("/api/tenant/ai/config"),
+  generateProductListing: (keywords: string, model?: string) =>
+    api<{
+      listing: {
+        title: string;
+        description: string;
+        page_title: string;
+        meta_description: string;
+        handle: string;
+        sku: string;
+        product_type: string;
+        price: number | null;
+        price_old: number | null;
+        vendor: string;
+        tags: string[];
+      };
+      model_used?: string;
+    }>("/api/tenant/products/ai-generate", {
+      method: "POST",
+      body: JSON.stringify({ keywords, model: model || undefined }),
+    }),
   getInventory: (params?: {
     company_id?: string;
     search?: string;
@@ -492,13 +590,25 @@ export const tenantApi = {
   syncAll: () =>
     api<{
       products_imported: number;
+      products_updated?: number;
+      products_fetched?: number;
+      products_pushed?: number;
+      products_pushed_daraz?: number;
       orders_imported: number;
+      orders_updated?: number;
+      orders_fetched?: number;
       inventory_synced: number;
-      errors: Array<{ scope: string; error: string }>;
+      errors: Array<{ scope: string; error: string; product_id?: string; channel?: string }>;
     }>("/api/tenant/sync", { method: "POST" }),
   patchInventory: (productId: string, body: { quantity: number }) =>
     api<{ quantity: number; allocated: number }>(`/api/tenant/inventory/${productId}`, {
       method: "PATCH",
       body: JSON.stringify(body),
+    }),
+  getStockAlerts: () => api<StockAlertSummary>("/api/tenant/stock-alerts"),
+  dismissStockAlerts: (alertIds?: string[]) =>
+    api<{ ok: boolean }>("/api/tenant/stock-alerts/dismiss", {
+      method: "POST",
+      body: JSON.stringify(alertIds?.length ? { alert_ids: alertIds } : {}),
     }),
 };

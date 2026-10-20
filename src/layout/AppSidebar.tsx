@@ -26,9 +26,9 @@ const tenantNavItems: NavItem[] = [
   {
     icon: <GridIcon />,
     name: "Dashboard",
+    path: "/",
     iconColor: "text-teal-500 group-hover:text-teal-600 dark:text-teal-400",
     iconColorActive: "text-teal-600 dark:text-teal-400",
-    subItems: [{ name: "Ecommerce", path: "/", pro: false }],
   },
   {
     icon: <BoxCubeIcon />,
@@ -311,6 +311,27 @@ const AppSidebar: React.FC = () => {
             <span className="text-xl font-semibold truncate text-gray-900 dark:text-white">
               {tenantDisplayName}
             </span>
+          ) : isSuperadmin ? (
+            isExpanded || isHovered || isMobileOpen ? (
+              <>
+                <img
+                  className="dark:hidden"
+                  src="/images/logo/logo-admin.svg"
+                  alt="Admin"
+                  width={140}
+                  height={32}
+                />
+                <img
+                  className="hidden dark:block"
+                  src="/images/logo/logo-admin-dark.svg"
+                  alt="Admin"
+                  width={140}
+                  height={32}
+                />
+              </>
+            ) : (
+              <img src="/images/logo/logo-icon.svg" alt="Admin" width={32} height={32} />
+            )
           ) : isExpanded || isHovered || isMobileOpen ? (
             <>
               <img

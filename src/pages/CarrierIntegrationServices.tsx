@@ -4,6 +4,7 @@ import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
 import { tenantApi, type CarrierIntegration, type CarrierIntegrationService } from "../api/client";
 import Label from "../components/form/Label";
+import SetupFormShell, { SetupFormAside, SetupFormSection } from "../components/setup/SetupFormShell";
 
 export default function CarrierIntegrationServices() {
   const [carrierIntegrations, setCarrierIntegrations] = useState<CarrierIntegration[]>([]);
@@ -156,16 +157,42 @@ export default function CarrierIntegrationServices() {
         )}
 
         {formVisible ? (
-          <div
-            ref={formContainerRef}
-            className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900/50"
-          >
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">Add service to carrier integration</h2>
-            </div>
-            <form onSubmit={handleSave} className="p-6">
-              <div className="space-y-5 max-w-2xl">
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+          <div ref={formContainerRef}>
+            <SetupFormShell
+              title="Add carrier service"
+              subtitle="Map a shipping service to your carrier integration for consignments."
+              badge="Courier"
+              onCancel={closeForm}
+              onSubmit={handleSave}
+              aside={
+                <SetupFormAside
+                  title="Enable shipping options"
+                  accent="amber"
+                  steps={[
+                    { label: "Pick integration", detail: "The carrier account you already connected." },
+                    { label: "Choose service", detail: "Service code from your carrier contract." },
+                    { label: "Book shipments", detail: "Use this service when creating consignments." },
+                  ]}
+                  tips={[
+                    "Connect a carrier integration before adding services.",
+                    "Service codes must match what your carrier API expects.",
+                    "Filter the list above to manage services per integration.",
+                  ]}
+                />
+              }
+              footer={
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-gray-200 pt-6 dark:border-gray-700">
+                  <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
+                    Cancel
+                  </button>
+                  <button type="submit" disabled={saving} className="rounded-lg bg-amber-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-amber-500/25 hover:bg-amber-700 disabled:opacity-60 dark:bg-amber-500 dark:hover:bg-amber-600">
+                    {saving ? "Saving…" : "Add service"}
+                  </button>
+                </div>
+              }
+            >
+              <SetupFormSection title="Service mapping" description="Link a carrier service to your integration.">
+                <div>
                   <Label>Carrier integration</Label>
                   <select
                     value={formCarrierIntegrationId}
@@ -178,7 +205,7 @@ export default function CarrierIntegrationServices() {
                     ))}
                   </select>
                 </div>
-                <div className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
+                <div>
                   <Label>Service</Label>
                   <select
                     value={formCarrierServiceId}
@@ -194,16 +221,8 @@ export default function CarrierIntegrationServices() {
                     <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">Create a carrier integration first.</p>
                   )}
                 </div>
-              </div>
-              <div className="mt-8 flex justify-end gap-2 border-t border-gray-200 pt-6 dark:border-gray-700">
-                <button type="button" onClick={closeForm} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700">
-                  Cancel
-                </button>
-                <button type="submit" disabled={saving} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 dark:bg-indigo-500 dark:hover:bg-indigo-600">
-                  {saving ? "Saving…" : "Create"}
-                </button>
-              </div>
-            </form>
+              </SetupFormSection>
+            </SetupFormShell>
           </div>
         ) : (
           <>

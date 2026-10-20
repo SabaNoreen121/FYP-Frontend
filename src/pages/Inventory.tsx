@@ -1,8 +1,9 @@
 import { useMemo, useState, useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import PageBreadcrumb from "../components/common/PageBreadCrumb";
 import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
+import { ProductChannelCell, ProductSyncStatus } from "../components/common/ChannelSyncStatus";
 import { tenantApi, type Company, type Product, type ProductVariant } from "../api/client";
 
 type InventoryRow = {
@@ -25,6 +26,8 @@ export default function Inventory() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("");
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const outOfStockOnly = searchParams.get("stock") === "out";
 
   const load = async () => {
     setError("");
@@ -88,6 +91,12 @@ export default function Inventory() {
         (row) => (row.product.product_type ?? "").trim().toLowerCase() === typeLower
       );
     }
+    if (outOfStockOnly) {
+      list = list.filter((row) => {
+        const qty = typeof row.product.quantity === "number" ? row.product.quantity : 0;
+        return qty <= 0;
+      });
+    }
     const freeStock = (row: InventoryRow) => {
       const qty = typeof row.product.quantity === "number" ? row.product.quantity : 0;
       const alloc = typeof row.product.allocated === "number" ? row.product.allocated : 0;
@@ -123,7 +132,7 @@ export default function Inventory() {
         break;
     }
     return list;
-  }, [flattenedRows, search, typeFilter, sort]);
+  }, [flattenedRows, search, typeFilter, sort, outOfStockOnly]);
 
   const uniqueTypes = useMemo(() => {
     const byLower = new Map<string, string>();
@@ -192,18 +201,14 @@ export default function Inventory() {
       },
     },
     {
-      key: "shopify_synced",
-      label: "Shopify",
-      render: (_, row) =>
-        row.product.shopify_synced ? (
-          <span className="inline-flex rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">
-            Synced
-          </span>
-        ) : (
-          <span className="inline-flex rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-            Not synced
-          </span>
-        ),
+      key: "channel",
+      label: "Company",
+      render: (_, row) => <ProductChannelCell product={row.product} />,
+    },
+    {
+      key: "sync_status",
+      label: "Status",
+      render: (_, row) => <ProductSyncStatus product={row.product} />,
     },
     {
       key: "product_id",
@@ -234,6 +239,18 @@ export default function Inventory() {
         {syncMessage && (
           <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400">
             {syncMessage}
+          </div>
+        )}
+        {outOfStockOnly && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+            <span>Showing out-of-stock products only.</span>
+            <button
+              type="button"
+              onClick={() => setSearchParams({})}
+              className="font-medium underline hover:no-underline"
+            >
+              Show all
+            </button>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-4 py-2">
@@ -293,9 +310,41 @@ export default function Inventory() {
               setSyncing(true);
               try {
                 const res = await tenantApi.syncAll();
-                setSyncMessage(
-                  `Synced: ${res.products_imported} products, ${res.orders_imported} orders, ${res.inventory_synced} inventory updates.`
-                );
+                const parts = [];
+                if (res.products_fetched != null && res.products_fetched > 0) {
+                  parts.push(
+                    `${res.products_fetched} product(s) from stores (${res.products_imported} new, ${res.products_updated ?? 0} updated)`
+                  );
+                } else if ((res.products_updated ?? 0) > 0) {
+                  parts.push(`${res.products_updated} product(s) updated from stores`);
+                } else {
+                  parts.push(`${res.products_imported} new product(s) imported`);
+                }
+                if (res.orders_fetched != null && res.orders_fetched > 0) {
+                  parts.push(
+                    `${res.orders_fetched} order(s) from stores (${res.orders_imported} new, ${res.orders_updated ?? 0} updated)`
+                  );
+                } else {
+                  parts.push(`${res.orders_imported} new order(s)`);
+                }
+                if ((res.products_pushed_daraz ?? 0) > 0) {
+                  parts.push(`${res.products_pushed_daraz} pushed to Daraz`);
+                }
+                parts.push(`${res.inventory_synced} inventory update(s) to channels`);
+                setSyncMessage(`Synced: ${parts.join("; ")}.`);
+                if (res.errors?.length) {
+                  const errPreview = res.errors
+                    .slice(0, 3)
+                    .map((e) => `${e.scope}: ${e.error}`)
+                    .join(" | ");
+                  setError(
+                    res.errors.length > 3
+                      ? `${errPreview} (+${res.errors.length - 3} more — see backend log)`
+                      : errPreview
+                  );
+                } else {
+                  setError("");
+                }
                 await load();
               } catch (e) {
                 setError(e instanceof Error ? e.message : "Sync failed");
@@ -310,13 +359,13 @@ export default function Inventory() {
           </button>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          Available = on-hand stock. Allocated = reserved by orders. Adjust available stock below; changes sync to Shopify when the product is linked.
+          Available = on-hand stock. Allocated = reserved by orders. Adjust available stock below; changes sync to the linked channel (Shopify or Daraz).
         </p>
         <DataGrid
           columns={columns}
           data={filteredRows}
           keyExtractor={(row) => `${row.product.id}-${row.variantIndex}`}
-          emptyMessage="No inventory. Add products or import from Shopify."
+          emptyMessage="No inventory. Add products or import from a connected store."
           loading={loading}
         />
       </div>

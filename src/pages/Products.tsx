@@ -1,8 +1,14 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import PageBreadcrumb from "../components/common/PageBreadCrumb";
 import PageMeta from "../components/common/PageMeta";
 import DataGrid, { type DataGridColumn } from "../components/common/DataGrid";
+import {
+  ProductChannelCell,
+  ProductSyncStatus,
+  getProductPushTargets,
+  productStatusLabel,
+} from "../components/common/ChannelSyncStatus";
 import { tenantApi, type Product, type ProductVariant, type Company, type CompanyIntegration } from "../api/client";
 import Input from "../components/form/input/InputField";
 import Label from "../components/form/Label";
@@ -45,16 +51,66 @@ const SHIPPING_COUNTRIES = [
   { value: "EU", label: "European Union (general)" },
 ];
 
+function companyWillSyncToStores(
+  companyId: string,
+  integrationSlugs: string[],
+  companyIntegrations: CompanyIntegration[]
+): boolean {
+  if (!companyId) return false;
+  const active = companyIntegrations.filter(
+    (ci) => (ci.company_id || "") === companyId && ci.status === 1
+  );
+  if (active.length === 0) return false;
+  if (integrationSlugs.length === 0) return true;
+  return integrationSlugs.some((slug) =>
+    active.some((ci) => (ci.integration_slug || "") === slug)
+  );
+}
+
+function darazTargetsForForm(
+  companyId: string,
+  integrationSlugs: string[],
+  companyIntegrations: CompanyIntegration[]
+): boolean {
+  if (!companyId) return false;
+  const active = companyIntegrations.filter(
+    (ci) => (ci.company_id || "") === companyId && ci.status === 1 && ci.integration_slug === "daraz"
+  );
+  if (active.length === 0) return false;
+  if (integrationSlugs.length === 0) return true;
+  return integrationSlugs.includes("daraz");
+}
+
+function validateDarazImageUrls(images: string[]): string | null {
+  const urls = images.map((s) => s.trim()).filter(Boolean);
+  if (urls.length === 0) return "Add at least one image URL to sync to Daraz.";
+  for (const u of urls) {
+    if (!/^https:\/\//i.test(u)) return "Image URLs must start with https://";
+    if (/\.html?(\?|#|$)/i.test(u)) {
+      return "One URL is a web page, not a photo. Right-click the product photo → Copy image address (should end with .jpg or .png).";
+    }
+    if (/\.(jpe?g|png)(\?|#|$)/i.test(u)) continue;
+    if (/slatic\.net|cdn\.shopify\.com|picsum\.photos|i\.imgur\.com/i.test(u)) continue;
+    if (/bluestone\.com|\/jewell|\/collections\/|\/products\/[^/]+\/?(\?|$)/i.test(u)) {
+      return "Use a direct image link (ends with .jpg or .png), not a jewellery shop page URL.";
+    }
+    return "Use a direct image link ending in .jpg or .png.";
+  }
+  return null;
+}
+
 function emptyForm() {
   return {
     title: "",
     page_title: "",
+    meta_description: "",
     handle: "",
     description: "",
     sku: "",
     product_type: "",
     price: "",
     price_old: "",
+    quantity: "",
     coupon: "",
     status: "active" as "active" | "draft" | "archived",
     sizes: [] as string[],
@@ -69,10 +125,15 @@ function emptyForm() {
 }
 
 export default function Products() {
+  const [searchParams] = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("search") ?? "");
+  useEffect(() => {
+    const q = searchParams.get("search");
+    if (q !== null) setSearch(q);
+  }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [sort, setSort] = useState<SortKey>("newest");
@@ -87,6 +148,15 @@ export default function Products() {
   const [companyIntegrations, setCompanyIntegrations] = useState<CompanyIntegration[]>([]);
   const [companyFilter, setCompanyFilter] = useState("");
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
+  const [listingChoiceOpen, setListingChoiceOpen] = useState(false);
+  const [aiKeywordsOpen, setAiKeywordsOpen] = useState(false);
+  const [aiKeywords, setAiKeywords] = useState("");
+  const [aiCompanyId, setAiCompanyId] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiModel, setAiModel] = useState("");
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
+  const [aiConfigLoading, setAiConfigLoading] = useState(false);
   const formContainerRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -123,13 +193,87 @@ export default function Products() {
     }
   }, [formVisible]);
 
-  const openCreate = () => {
+  const openCreateForm = (prefill?: ReturnType<typeof emptyForm>) => {
     setError("");
     setEditing(null);
     setEditingVariantIndex(null);
     setSyncWarning(null);
-    setForm(emptyForm());
+    setForm(prefill ?? emptyForm());
     setFormVisible(true);
+  };
+
+  const openCreate = () => {
+    setListingChoiceOpen(true);
+  };
+
+  const startManualListing = () => {
+    setListingChoiceOpen(false);
+    openCreateForm();
+  };
+
+  const startAiListing = () => {
+    setListingChoiceOpen(false);
+    setAiKeywords("");
+    setAiCompanyId(companyFilter || companies[0]?.id || "");
+    setAiKeywordsOpen(true);
+  };
+
+  useEffect(() => {
+    if (!aiKeywordsOpen) return;
+    setAiConfigLoading(true);
+    tenantApi
+      .getAiConfig()
+      .then((cfg) => {
+        setAiConfigured(cfg.configured);
+        setAiModels(cfg.models || []);
+        setAiModel(cfg.model || cfg.models?.[0] || "gemini-2.5-flash");
+      })
+      .catch(() => {
+        setAiConfigured(false);
+        setAiModels(["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"]);
+        setAiModel("gemini-2.5-flash");
+      })
+      .finally(() => setAiConfigLoading(false));
+  }, [aiKeywordsOpen]);
+
+  const runAiListing = async () => {
+    const keywords = aiKeywords.trim();
+    if (!keywords) {
+      setError("Enter keywords describing your product.");
+      return;
+    }
+    if (!aiConfigured) {
+      setError("Gemini API key is missing. Add GEMINI_API_KEY to backend/.env and restart the server.");
+      return;
+    }
+    setError("");
+    setAiGenerating(true);
+    try {
+      const { listing, model_used } = await tenantApi.generateProductListing(keywords, aiModel || undefined);
+      if (model_used && model_used !== aiModel) {
+        setAiModel(model_used);
+      }
+      setAiKeywordsOpen(false);
+      openCreateForm({
+        ...emptyForm(),
+        company_id: aiCompanyId,
+        title: listing.title,
+        page_title: listing.page_title,
+        meta_description: listing.meta_description,
+        handle: listing.handle,
+        description: listing.description,
+        sku: listing.sku,
+        product_type: listing.product_type,
+        price: listing.price != null ? String(listing.price) : "",
+        price_old: listing.price_old != null ? String(listing.price_old) : "",
+        vendor: listing.vendor,
+        tags: listing.tags ?? [],
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI listing failed");
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   /** Open edit form. When variantIndex is set, only that variant is shown and saved. */
@@ -149,12 +293,14 @@ export default function Products() {
     setForm({
       title: p.title ?? "",
       page_title: p.page_title ?? "",
+      meta_description: p.meta_description ?? "",
       handle: p.handle ?? "",
       description: p.description ?? "",
       sku: p.sku ?? "",
       product_type: p.product_type ?? "",
       price: displayPrice != null ? String(displayPrice) : "",
       price_old: displayPriceOld != null ? String(displayPriceOld) : "",
+      quantity: p.quantity != null ? String(p.quantity) : "",
       coupon: p.coupon ?? "",
       status: (["active", "draft", "archived"].includes(String(p.status || "")) ? (p.status as "active" | "draft" | "archived") : (p.status === "published" ? "active" : p.status === "scheduled" ? "draft" : p.status === "hidden" ? "archived" : "active")) as "active" | "draft" | "archived",
       sizes: Array.isArray(p.sizes) ? p.sizes : [],
@@ -213,6 +359,14 @@ export default function Products() {
     return Number.isNaN(n) ? null : n;
   };
 
+  const parseQuantity = (val: string): number | null => {
+    const t = val.trim();
+    if (t === "") return null;
+    const n = Number(t);
+    if (Number.isNaN(n) || n < 0) return null;
+    return Math.floor(n);
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return;
@@ -221,24 +375,44 @@ export default function Products() {
       setError("Product title is required.");
       return;
     }
-    const companyHasShopify =
-      form.company_id &&
-      companyIntegrations.some(
-        (ci) => (ci.company_id || "") === form.company_id && (ci.integration_slug || "") === "shopify" && ci.status === 1
-      );
+    const willSyncToStores = companyWillSyncToStores(
+      form.company_id,
+      form.integration_slugs,
+      companyIntegrations
+    );
     const categoryTrimmed = form.product_type.trim();
-    if (companyHasShopify && !categoryTrimmed) {
-      setError("Category is required when syncing to Shopify. Enter a category (e.g. Laptops, Jewellery, T-Shirts) so it appears in your Shopify store.");
+    if (willSyncToStores && !categoryTrimmed) {
+      setError(
+        "Category is required when publishing to connected stores (e.g. Laptops, Jewellery, T-Shirts)."
+      );
       return;
+    }
+    const wantsDaraz = darazTargetsForForm(form.company_id, form.integration_slugs, companyIntegrations);
+    if (wantsDaraz) {
+      if (!categoryTrimmed) {
+        setError("Category is required for Daraz (e.g. Jewellery, T-Shirts).");
+        return;
+      }
+      if (!form.sku.trim()) {
+        setError("SKU is required to sync to Daraz.");
+        return;
+      }
+      const imgErr = validateDarazImageUrls(form.images);
+      if (imgErr) {
+        setError(imgErr);
+        return;
+      }
     }
     setError("");
     setSaving(true);
     try {
       const price = parsePrice(form.price);
       const price_old = parsePrice(form.price_old);
+      const stockQty = parseQuantity(form.quantity);
       const variants = form.variants.map((v) => ({
         ...v,
         price: parsePrice(v.price as string | number),
+        ...(stockQty != null && v.inventory_quantity == null ? { inventory_quantity: stockQty } : {}),
       }));
       if (editing) {
         let variantsToSend: typeof variants | undefined = variants.length ? variants : undefined;
@@ -255,6 +429,7 @@ export default function Products() {
           title,
           company_id: form.company_id.trim() || null,
           page_title: form.page_title.trim() || undefined,
+          meta_description: form.meta_description.trim() || undefined,
           handle: form.handle.trim() || undefined,
           description: form.description.trim() || undefined,
           sku: form.sku.trim() || undefined,
@@ -271,14 +446,28 @@ export default function Products() {
           integration_slugs: form.integration_slugs,
           variants: variantsToSend,
         };
-        const data = await tenantApi.updateProduct(editing.id, updatePayload) as Product & { sync_warning?: string };
-        if (data?.sync_warning) setSyncWarning(data.sync_warning);
-        else setSyncWarning(null);
+        const data = await tenantApi.updateProduct(editing.id, updatePayload) as Product & {
+          daraz_sync_warning?: string;
+        };
+        if (stockQty != null) {
+          await tenantApi.patchInventory(editing.id, { quantity: stockQty });
+        }
+        if (data?.daraz_sync_warning) {
+          setSyncWarning(`Daraz sync: ${data.daraz_sync_warning}`);
+        } else if (data?.daraz_synced) {
+          setSyncWarning("Product synced to Daraz.");
+        } else {
+          setSyncWarning(null);
+        }
+        await load();
+        closeForm();
+        return;
       } else {
         const created = await tenantApi.createProduct({
           title,
           company_id: form.company_id.trim() || undefined,
           page_title: form.page_title.trim() || undefined,
+          meta_description: form.meta_description.trim() || undefined,
           handle: form.handle.trim() || undefined,
           description: form.description.trim() || undefined,
           sku: form.sku.trim() || undefined,
@@ -294,11 +483,19 @@ export default function Products() {
           vendor: form.vendor.trim() || undefined,
           integration_slugs: form.integration_slugs,
           source: "local",
+          quantity: stockQty != null ? stockQty : undefined,
           variants: variants.length ? variants : undefined,
-        }) as Product & { category_warning?: string };
-        if (created?.category_warning) setSyncWarning(created.category_warning);
-        else setSyncWarning(null);
-        // So the refetched list includes the new product (match current filter or show all)
+        }) as Product & { category_warning?: string; daraz_sync_warning?: string };
+        const warn = created?.category_warning || created?.daraz_sync_warning;
+        if (warn) {
+          setSyncWarning(
+            created?.daraz_sync_warning ? `Daraz sync: ${created.daraz_sync_warning}` : warn
+          );
+        } else if (created?.company_id) {
+          setSyncWarning("Product saved.");
+        } else {
+          setSyncWarning(null);
+        }
         setCompanyFilter(created?.company_id ?? "");
       }
       await load();
@@ -322,6 +519,25 @@ export default function Products() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Push to Shopify failed.");
       setSyncWarning(null);
+    }
+  };
+
+  const handlePushToDaraz = async (p: Product) => {
+    setActionsOpenId(null);
+    setError("");
+    setSyncWarning(null);
+    const imgs = Array.isArray(p.images) ? p.images : [];
+    const imgErr = validateDarazImageUrls(imgs);
+    if (imgErr) {
+      setError(imgErr);
+      return;
+    }
+    try {
+      const data = await tenantApi.pushProductToDaraz(p.id);
+      setSyncWarning(data?.message || "Product synced to Daraz.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Push to Daraz failed.");
     }
   };
 
@@ -449,11 +665,18 @@ export default function Products() {
               className="left-0 right-auto min-w-[120px]"
             >
               <DropdownItem onClick={() => openEdit(row.product, row.variantIndex)}>Edit</DropdownItem>
-              {row.product.company_id && row.product.source !== "shopify" && (
-                <DropdownItem onClick={() => handlePushToShopify(row.product)}>
-                  Push to Shopify
-                </DropdownItem>
-              )}
+              {getProductPushTargets(row.product, companyIntegrations).includes("shopify") &&
+                !row.product.shopify_synced && (
+                  <DropdownItem onClick={() => handlePushToShopify(row.product)}>
+                    Push to Shopify
+                  </DropdownItem>
+                )}
+              {getProductPushTargets(row.product, companyIntegrations).includes("daraz") &&
+                !row.product.daraz_synced && (
+                  <DropdownItem onClick={() => handlePushToDaraz(row.product)}>
+                    Push to Daraz
+                  </DropdownItem>
+                )}
               <DropdownItem
                 onClick={() => handleDelete(row.product)}
                 className="text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20"
@@ -506,29 +729,19 @@ export default function Products() {
       },
     },
     {
-      key: "status",
-      label: "Status",
-      render: (_, row) => {
-        const s = row.product.status || "active";
-        const label = s === "published" ? "Active" : s === "scheduled" ? "Draft" : s === "hidden" ? "Archived" : String(s).charAt(0).toUpperCase() + String(s).slice(1).toLowerCase();
-        return label;
-      },
+      key: "channel",
+      label: "Company",
+      render: (_, row) => <ProductChannelCell product={row.product} />,
     },
     {
-      key: "shopify_synced",
-      label: "Shopify status",
-      render: (_, row) =>
-        row.product.shopify_synced ? (
-          <span className="inline-flex rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/30 dark:text-green-400">
-            Synced
-          </span>
-        ) : row.product.company_id ? (
-          <span className="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-            Not synced
-          </span>
-        ) : (
-          "—"
-        ),
+      key: "product_status",
+      label: "Product status",
+      render: (_, row) => productStatusLabel(row.product.status),
+    },
+    {
+      key: "sync_status",
+      label: "Status",
+      render: (_, row) => <ProductSyncStatus product={row.product} />,
     },
   ];
 
@@ -574,19 +787,33 @@ export default function Products() {
             ref={formContainerRef}
             className="overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900/50"
           >
-            <div className="border-b border-gray-100 px-6 py-4 dark:border-gray-800">
-              <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
-                {editing
-                  ? editingVariantIndex != null
-                    ? "Edit variant"
-                    : "Edit product"
-                  : "Add product"}
-              </h2>
-              {editing && editingVariantIndex != null && (
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                  Editing this variant only. Other variants of &quot;{editing.title}&quot; are unchanged.
-                </p>
-              )}
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 px-6 py-4 dark:border-gray-800">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
+                  {editing
+                    ? editingVariantIndex != null
+                      ? "Edit variant"
+                      : "Edit product"
+                    : "Add product"}
+                </h2>
+                {!editing && (
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Add to your catalog and optionally publish to connected stores (Shopify, Daraz, and others).
+                  </p>
+                )}
+                {editing && editingVariantIndex != null && (
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Editing this variant only. Other variants of &quot;{editing.title}&quot; are unchanged.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={closeForm}
+                className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                ← Back to list
+              </button>
             </div>
 
             <form id="product-form" onSubmit={handleSave} className="p-6">
@@ -620,6 +847,20 @@ export default function Products() {
                         />
                       </div>
                       <div>
+                        <Label>Quantity in stock</Label>
+                        <Input
+                          type="text"
+                          inputMode="numeric"
+                          value={form.quantity}
+                          onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value.replace(/[^\d]/g, "") }))}
+                          placeholder="e.g. 100"
+                          className="mt-1.5"
+                        />
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          Starting inventory for this product. You can adjust it later from Inventory.
+                        </p>
+                      </div>
+                      <div>
                         <Label>Product coupon / discount code</Label>
                         <Input
                           value={form.coupon}
@@ -633,8 +874,11 @@ export default function Products() {
 
                   <section className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
                     <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                      Status (Shopify)
+                      Visibility
                     </h3>
+                    <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                      Active products can be listed on connected stores; draft and archived are hidden from sale.
+                    </p>
                     <div className="flex flex-wrap gap-6">
                       <Radio
                         id="vis-active"
@@ -685,7 +929,7 @@ export default function Products() {
                         Variants
                       </h3>
                       <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-                        Shopify variants: set Option 1 (e.g. Size or Color), SKU, and price per variant. Avoid &quot;Default Title&quot; so the option shows correctly in Shopify.
+                        Optional variants with Option 1 (e.g. size or color), SKU, and price per variant. Use a clear option name instead of &quot;Default Title&quot; on connected stores.
                       </p>
                       <div className="space-y-3">
                         {form.variants.map((v, i) => (
@@ -751,7 +995,7 @@ export default function Products() {
                     </h3>
                     <div className="space-y-4">
                       <div>
-                        <Label>Title (Shopify: Product name)</Label>
+                        <Label>Product title</Label>
                         <Input
                           value={form.title}
                           onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
@@ -763,7 +1007,7 @@ export default function Products() {
                       <div>
                         <Label>
                           Category
-                          {form.company_id && companyIntegrations.some((ci) => (ci.company_id || "") === form.company_id && (ci.integration_slug || "") === "shopify" && ci.status === 1) && (
+                          {companyWillSyncToStores(form.company_id, form.integration_slugs, companyIntegrations) && (
                             <span className="ml-1 text-rose-600 dark:text-rose-400">*</span>
                           )}
                         </Label>
@@ -772,9 +1016,9 @@ export default function Products() {
                           onChange={(e) => setForm((f) => ({ ...f, product_type: e.target.value }))}
                           placeholder="e.g. Laptops, Jewellery, Trousers, T-Shirts"
                           className="mt-1.5"
-                          list="shopify-category-suggestions"
+                          list="category-suggestions"
                         />
-                        <datalist id="shopify-category-suggestions">
+                        <datalist id="category-suggestions">
                           <option value="Laptops" />
                           <option value="Jewellery" />
                           <option value="Trousers" />
@@ -783,11 +1027,12 @@ export default function Products() {
                           <option value="Electronics" />
                         </datalist>
                         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                          Syncs to Shopify&apos;s Category column. Required when publishing to Shopify. Use standard names so it appears correctly in your store.
+                          Maps to marketplace categories on connected stores (e.g. Jewellery, T-Shirts).
+                          Required when publishing to any connected store.
                         </p>
                       </div>
                       <div>
-                        <Label>Product URL handle (Shopify: handle)</Label>
+                        <Label>URL handle</Label>
                         <Input
                           value={form.handle}
                           onChange={(e) => setForm((f) => ({ ...f, handle: e.target.value }))}
@@ -799,7 +1044,7 @@ export default function Products() {
                         </p>
                       </div>
                       <div>
-                        <Label>Page title (Shopify: SEO title)</Label>
+                        <Label>Page title (SEO meta title)</Label>
                         <Input
                           value={form.page_title}
                           onChange={(e) => setForm((f) => ({ ...f, page_title: e.target.value }))}
@@ -807,9 +1052,19 @@ export default function Products() {
                           className="mt-1.5"
                         />
                       </div>
+                      <div>
+                        <Label>Meta description (SEO)</Label>
+                        <TextArea
+                          value={form.meta_description}
+                          onChange={(value) => setForm((f) => ({ ...f, meta_description: value }))}
+                          placeholder="Short description for search engines (max ~160 characters)"
+                          rows={2}
+                          className="mt-1.5"
+                        />
+                      </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <Label>SKU (Shopify)</Label>
+                          <Label>SKU</Label>
                           <Input
                             value={form.sku}
                             onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value }))}
@@ -818,7 +1073,7 @@ export default function Products() {
                           />
                         </div>
                         <div>
-                          <Label>Vendor (Shopify: Brand)</Label>
+                          <Label>Brand / vendor</Label>
                           <Input
                             value={form.vendor}
                             onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}
@@ -828,7 +1083,7 @@ export default function Products() {
                         </div>
                       </div>
                       <div>
-                        <Label>Tags (Shopify: comma-separated)</Label>
+                        <Label>Tags (comma-separated)</Label>
                         <Input
                           value={form.tags.join(", ")}
                           onChange={(e) =>
@@ -861,7 +1116,7 @@ export default function Products() {
                               ))}
                             </select>
                             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                              If this product already exists for the company (e.g. from Shopify), edit it from the list instead of adding again to avoid duplicates.
+                              If this product already exists for the company (e.g. imported from a store), edit it from the list instead of adding again to avoid duplicates.
                             </p>
                           </div>
                           {form.company_id && (() => {
@@ -873,7 +1128,7 @@ export default function Products() {
                               <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-4 dark:border-gray-700 dark:bg-gray-800/30">
                                 <Label>Show this product on</Label>
                                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                  All platforms = all stores (e.g. Shopify, Daraz) for this company. Or choose specific platforms only.
+                                  All platforms = every connected store for this company. Or choose specific channels only.
                                 </p>
                                 <div className="mt-3 space-y-2">
                                   <label className="flex items-center gap-2">
@@ -985,7 +1240,7 @@ export default function Products() {
                   </section>
 
                   <section className="rounded-xl border border-gray-100 bg-gray-50/50 p-5 dark:border-gray-800 dark:bg-gray-800/30">
-                    <Label>Description (Shopify: body)</Label>
+                    <Label>Description</Label>
                     <TextArea
                       value={form.description}
                       onChange={(v) => setForm((f) => ({ ...f, description: v }))}
@@ -1015,7 +1270,8 @@ export default function Products() {
                       Product images
                     </h3>
                     <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
-                      Add image URLs (one per line). Image upload can be added later.
+                      One URL per line. Must be a direct photo link (ends with .jpg or .png), not a
+                      shop page. Tip: right‑click the photo → Copy image address.
                     </p>
                     <TextArea
                       value={form.images.join("\n")}
@@ -1136,6 +1392,137 @@ export default function Products() {
           </>
         )}
       </div>
+
+      {listingChoiceOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setListingChoiceOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Add product</h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              Choose how you want to create this listing.
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={startManualListing}
+                className="flex-1 rounded-lg border border-gray-300 px-4 py-3 text-sm font-medium text-gray-800 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800"
+              >
+                Manual listing
+              </button>
+              <button
+                type="button"
+                onClick={startAiListing}
+                className="flex-1 rounded-lg bg-sky-600 px-4 py-3 text-sm font-medium text-white hover:bg-sky-700 dark:bg-sky-500 dark:hover:bg-sky-600"
+              >
+                AI listing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiKeywordsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => !aiGenerating && setAiKeywordsOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-xl dark:border-gray-700 dark:bg-gray-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">AI product listing</h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              Describe your product in a few words. Gemini will fill title, description, SEO fields, SKU, price, and more.
+              If you see a quota error, switch to <strong className="font-medium">gemini-2.5-flash</strong> below.
+            </p>
+            {aiConfigLoading ? (
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">Loading Gemini models…</p>
+            ) : aiConfigured === false ? (
+              <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+                Gemini API key not detected. Add GEMINI_API_KEY to backend/.env and restart the server.
+              </p>
+            ) : (
+              <p className="mt-3 text-xs text-green-700 dark:text-green-400">
+                Gemini connected{aiModel ? ` · model: ${aiModel}` : ""}
+              </p>
+            )}
+            {aiModels.length > 0 && (
+              <div className="mt-4">
+                <Label>Gemini model</Label>
+                <select
+                  value={aiModel}
+                  onChange={(e) => setAiModel(e.target.value)}
+                  disabled={aiGenerating || aiConfigLoading}
+                  className="mt-1.5 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                >
+                  {aiModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="mt-4">
+              <Label>Company</Label>
+              <select
+                value={aiCompanyId}
+                onChange={(e) => setAiCompanyId(e.target.value)}
+                disabled={aiGenerating}
+                className="mt-1.5 h-11 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+              >
+                <option value="">Local only (no store sync)</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name || c.id}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Choose which company this product belongs to. Required if you want to publish to connected stores.
+              </p>
+              {companies.length === 0 && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  No companies yet. Create one under Setup → Companies first.
+                </p>
+              )}
+            </div>
+            <div className="mt-4">
+              <Label>Keywords</Label>
+              <Input
+                value={aiKeywords}
+                onChange={(e) => setAiKeywords(e.target.value)}
+                placeholder="e.g. shirt cotton comfort for men"
+                className="mt-1.5"
+                disabled={aiGenerating}
+              />
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={aiGenerating}
+                onClick={() => setAiKeywordsOpen(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-60 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={aiGenerating || !aiKeywords.trim() || aiConfigured === false}
+                onClick={() => void runAiListing()}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-60 dark:bg-sky-500"
+              >
+                {aiGenerating ? "Generating…" : "Generate listing"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

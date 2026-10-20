@@ -111,7 +111,7 @@ export default function InventoryAdjust() {
                   className="mt-1.5"
                 />
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Available = on-hand stock that can be sold. Changes sync to Shopify when the product is linked.
+                  Available = on-hand stock that can be sold. Changes sync to the linked channel (Shopify or Daraz) when the product is linked.
                 </p>
               </div>
             </div>

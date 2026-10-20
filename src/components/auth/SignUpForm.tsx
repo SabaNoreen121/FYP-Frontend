@@ -5,6 +5,7 @@ import Label from "../form/Label";
 import Input from "../form/input/InputField";
 import Checkbox from "../form/input/Checkbox";
 import { authApi } from "../../api/client";
+import { offerToSaveCredentials, redirectAfterAuth } from "../../utils/passwordManager";
 
 export default function SignUpForm() {
   const [showPassword, setShowPassword] = useState(false);
@@ -31,12 +32,12 @@ export default function SignUpForm() {
       return;
     }
     setLoading(true);
+    const emailNorm = em.toLowerCase();
     try {
-      await authApi.signup({ tenant_name: name, email: em, password });
-      setSuccess("Signup successful. Wait for admin approval before you can sign in.");
-      setTenantName("");
-      setEmail("");
-      setPassword("");
+      await authApi.signup({ tenant_name: name, email: emailNorm, password });
+      await offerToSaveCredentials(emailNorm, password);
+      redirectAfterAuth("/signin?registered=1");
+      return;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed.");
     } finally {
@@ -76,40 +77,55 @@ export default function SignUpForm() {
             </div>
           )}
           <div>
-            <form onSubmit={handleSubmit}>
+            <form
+              name="signup"
+              action="/signup"
+              method="post"
+              autoComplete="on"
+              onSubmit={handleSubmit}
+            >
               <div className="space-y-5">
                 <div>
-                  <Label>
+                  <Label htmlFor="signup-organization">
                     Organization / Tenant name <span className="text-error-500">*</span>
                   </Label>
                   <Input
+                    id="signup-organization"
+                    name="organization"
                     type="text"
                     placeholder="My Company"
+                    autoComplete="organization"
                     value={tenant_name}
                     onChange={(e) => setTenantName(e.target.value)}
                     disabled={loading}
                   />
                 </div>
                 <div>
-                  <Label>
+                  <Label htmlFor="signup-email">
                     Email <span className="text-error-500">*</span>
                   </Label>
                   <Input
+                    id="signup-email"
+                    name="email"
                     type="email"
                     placeholder="Enter your email"
+                    autoComplete="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     disabled={loading}
                   />
                 </div>
                 <div>
-                  <Label>
+                  <Label htmlFor="signup-password">
                     Password <span className="text-error-500">*</span>
                   </Label>
                   <div className="relative">
                     <Input
+                      id="signup-password"
+                      name="password"
                       placeholder="Enter your password (min 6 characters)"
                       type={showPassword ? "text" : "password"}
+                      autoComplete="new-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       disabled={loading}
